@@ -1,56 +1,57 @@
+#include "waveform.hpp"
+#include <unordered_map>
+#include <memory>
+#include <string>
+#include <iostream>
 #include "rtm/probe.h"
 
 using namespace std::chrono;
 
-int main(int argc, char* argv[])
+Waveform *create_sine(double freq, double amp);
+Waveform *create_square(double freq, double amp);
+Waveform *create_saw(double freq, double amp);
+
+int main(int argc, char *argv[])
 {
-    if (argc != 2)
+    if (argc != 4)
     {
-        printf("Usage: /generator [samples]\n");
+        std::cerr << "Usage: generator <filename> <wave> <samples>\n";
+        std::cerr << "Wave types: sine | square | saw\n";
+        return 1;
+    }
+
+    std::string filename = argv[1];
+    std::string wave_type = argv[2];
+    uint64_t samples = std::stoull(argv[3]);
+
+    std::unordered_map<std::string, Waveform *(*)(double, double)> factory = {
+        {"sine", create_sine},
+        {"square", create_square},
+        {"saw", create_saw}};
+
+    if (!factory.count(wave_type))
+    {
+        std::cerr << "Unknown wave type: " << wave_type << "\n";
         return 1;
     }
 
     constexpr nanoseconds START = 8'000'000s;
-
-    uint64_t samples = std::stoull(argv[1]);
-    printf("Generate %ld samples\n", samples);
-
-    auto io = std::make_unique<rtm::FileWrite>("test.tick");
+    auto io = std::make_unique<rtm::FileWrite>(filename.c_str());
     rtm::Probe probe;
-    probe.init("generator", "one_task",
-            START, 1ms, 42,
-            std::move(io));
+    probe.init("generator", wave_type.c_str(),
+               START, 1ms, 42,
+               std::move(io));
 
-    uint64_t period = 1;
-    uint64_t save_period = 0;
-    for (uint64_t i = 1; i < samples; i += period)
+    std::unique_ptr<Waveform> wave(factory[wave_type](0.001, 1.0));
+
+    for (uint64_t i = 0; i < samples; ++i)
     {
-        if (i > (samples / 3))
-        {
-            period = 7;
-        }
-        if (i > (samples * 2 / 3))
-        {
-            period = 3;
-        }
+        double value = wave->getValue(i);
+        nanoseconds now = START + duration_cast<nanoseconds>(milliseconds(i)) +
+                          duration_cast<nanoseconds>(microseconds((int)(value * 500)));
 
-        // create a discontinuity of one record (like a real time loss)
-        if (save_period != 0)
-        {
-            period = save_period;
-            save_period = 0;
-        }
-        if (i == (samples / 5))
-        {
-            save_period = period;
-            period = 30;
-        }
-
-        nanoseconds now = START + 20ms + i * 1ms + (100 - rand() % 200) * 1us;
         probe.log(now);
-        probe.log(now + (rand() % 500 + period * 50) * 1us);
+        probe.log(now + 200us);
     }
     probe.flush();
-
-    return 0;
 }
